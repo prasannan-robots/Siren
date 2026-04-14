@@ -1,0 +1,12 @@
+opencv-python
+numpy
+folium
+roboflow
+supervision
+inference-sdk
+scikit-learn
+python-dotenv
+requests
+pyserial
+pynmea2
+paho-mqtt

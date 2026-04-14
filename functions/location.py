@@ -1,63 +1,52 @@
 import os, folium, csv, requests, numpy as np
 from dotenv import load_dotenv
-from pyicloud import PyiCloudService
 from database import get_database_value
 from math import pi
 from sklearn.linear_model import LinearRegression
 from datetime import datetime
 INTERVAL = 3
 
-def load_api():
-    load_dotenv(dotenv_path="/Users/pearlnatalia/Desktop/car/.env")
-    iCloud_user = os.getenv("iCloud_user")
-    iCloud_pass = os.getenv("iCloud_pass")
-    api = PyiCloudService(iCloud_user, iCloud_pass)
-    return api
 
-
-def get_device():
-    devices = load_api().devices
-    for device in devices:
-        if device.get('deviceClass') == 'iPhone': 
-            return device
 
 
 def update_map(map, latitude, longitude):
     folium.Marker([latitude, longitude]).add_to(map)
-    map.save('/Users/pearlnatalia/Desktop/car/geolocation/map.html')
+    map.save('../geolocation/map.html')
 
 
 def get_csv_value(row):
-    csv_path = "/Users/pearlnatalia/desktop/car/geolocation/red-light-cameras.csv"
+    csv_path = "../geolocation/red-light-cameras.csv"
     with open(csv_path, mode='r') as file:
         csv_reader = csv.reader(file)
         return list(csv_reader)[row]
 
 
 def get_street_name(api_key, lat, long):
-    url = f"https://revgeocode.search.hereapi.com/v1/revgeocode?at={lat},{long}&apiKey={api_key}"
+    url = f"https://maps.googleapis.com/maps/api/geocode/json?latlng={lat},{long}&key={api_key}"
 
     response = requests.get(url)
-    if(response.status_code == 200):
+    if response.status_code == 200:
         data = response.json()
-        if('street' in data['items'][0]['address']):
-            return data['items'][0]['address']['street']
+        if data.get('results'):
+            for component in data['results'][0].get('address_components', []):
+                if 'route' in component.get('types', []):
+                    return component['long_name']
     return None
 
 
 def get_driving_distance(api_key, target_coordinate, current_coordinate):    
-    base_url = "https://router.hereapi.com/v8/routes"
+    base_url = "https://maps.googleapis.com/maps/api/directions/json"
     params = {
-        "transportMode": "car",
         "origin": current_coordinate,
         "destination": target_coordinate,
-        "return": "summary",
-        "apiKey": api_key
+        "mode": "driving",
+        "key": api_key
     }
     response = requests.get(base_url, params=params)
     if response.status_code == 200:
         data = response.json()
-        return data['routes'][0]['sections'][0]['summary']['length']
+        if data.get('routes'):
+            return data['routes'][0]['legs'][0]['distance']['value']  # meters
     return -1
 
 
@@ -84,8 +73,8 @@ def get_red_light_camera(lat, long):
     intersection, region = "", ""
 
     # reverse geocoding api
-    load_dotenv(dotenv_path="/Users/pearlnatalia/Desktop/car/.env")
-    API_KEY = os.getenv("HERE_API_KEY")
+    load_dotenv(dotenv_path="../.env")
+    API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
     ENTRY_COUNT = 408
    
     current_street = format_address(get_street_name(API_KEY, lat, long))
@@ -120,25 +109,30 @@ def get_time_difference(prev_time, curr_time):
 
 
 def detect_speeding(lat, long, api_key, speed):
-    base_url = "https://routematching.hereapi.com/v8/match/routelinks"
+    base_url = "https://roads.googleapis.com/v1/speedLimits"
     params = {
-        "apikey": api_key,
-        "waypoint0": lat+","+long,
-        "mode": "fastest;car",
-        "routeMatch": "1",
-        "attributes": "SPEED_LIMITS_FCn(*)"
+        "path": f"{lat},{long}",
+        "key": api_key
     }
-    response = requests.get(base_url, params=params)
-    if response.status_code == 200:
-        data = response.json()['response']['route'][0]['leg'][0]['link'][0]['attributes']['SPEED_LIMITS_FCN'][0]
-        speed_limit = int(data['TO_REF_SPEED_LIMIT'])
-        if(speed_limit==0):
-            speed_limit = int(data['FROM_REF_SPEED_LIMIT'])
-            
-        if(speed_limit):
-            print(f"Speed limit: {speed_limit} km/h")
-            if(speed-speed_limit>=10): # if going 5 km/h over
-                return speed_limit, True          
+    speed_limit = 0
+    try:
+        response = requests.get(base_url, params=params)
+        if response.status_code == 200:
+            data = response.json()
+            if 'speedLimits' in data and len(data['speedLimits']) > 0:
+                speed_limit = int(data['speedLimits'][0]['speedLimit'])
+                # Convert mph to km/h if units are MPH
+                if data['speedLimits'][0].get('units') == 'MPH':
+                    speed_limit = int(speed_limit * 1.60934)
+                
+                if speed_limit:
+                    print(f"Speed limit: {speed_limit} km/h")
+                    if speed - speed_limit >= 10:  # if going 10 km/h over
+                        return speed_limit, True
+        else:
+            print(f"Speed limit API unavailable (status {response.status_code}), skipping speed check")
+    except Exception as e:
+        print(f"Speed limit lookup failed: {e}")
     return speed_limit, False
     
 
@@ -156,8 +150,8 @@ def get_speed_info(cur_lat, cur_long, paths_path, curr_time):
             
             if(0<time_difference <= 60): # prev location = recorded less than a minute ago
                 # reverse geocoding api
-                load_dotenv(dotenv_path="/Users/pearlnatalia/Desktop/car/.env")
-                api_key = os.getenv("HERE_API_KEY")
+                load_dotenv(dotenv_path="../.env")
+                api_key = os.getenv("GOOGLE_MAPS_API_KEY")
                 distance = get_driving_distance(api_key, str(cur_lat)+","+str(cur_long), str(prev_lat)+","+str(prev_long))
                 if(distance<0): distance=0
                 speed = round(distance/time_difference*3.6) # m/s --> km/h
@@ -167,10 +161,10 @@ def get_speed_info(cur_lat, cur_long, paths_path, curr_time):
     return 0.0, 0.0, boolean
 
 
-def get_coordinates(device, map):
-    location = device.location()
-    if location:
-        latitude, longitude = location['latitude'], location['longitude']
+def get_coordinates(gps_reader, map):
+    """Get coordinates from GPSReader (NEO-6M module)."""
+    latitude, longitude = gps_reader.get_position()
+    if latitude is not None and longitude is not None:
         update_map(map, latitude, longitude)
         return latitude, longitude
     return None, None
