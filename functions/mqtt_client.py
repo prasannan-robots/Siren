@@ -12,10 +12,17 @@ class ViolationPublisher:
     def __init__(self, broker, port, username, password):
         self.broker = broker
         self.port = int(port)
-        self.client = mqtt.Client(
-            client_id=f"siren-dashcam-{int(time.time())}",
-            protocol=mqtt.MQTTv5
-        )
+        client_id = f"siren-dashcam-{int(time.time())}"
+        # paho-mqtt 2.0 requires an explicit callback API version; passing it
+        # on 1.x raises, so only use it when it's available.
+        if hasattr(mqtt, "CallbackAPIVersion"):
+            self.client = mqtt.Client(
+                mqtt.CallbackAPIVersion.VERSION2,
+                client_id=client_id,
+                protocol=mqtt.MQTTv5,
+            )
+        else:
+            self.client = mqtt.Client(client_id=client_id, protocol=mqtt.MQTTv5)
         self.client.username_pw_set(username, password)
         self.connected = False
 
@@ -33,16 +40,18 @@ class ViolationPublisher:
         except Exception as e:
             print(f"[MQTT] Connection failed: {e}")
 
-    def _on_connect(self, client, userdata, flags, rc, properties=None):
-        if rc == 0:
+    # *args keeps these working across paho-mqtt callback API versions, whose
+    # on_connect/on_disconnect signatures differ.
+    def _on_connect(self, client, userdata, flags, reason_code, *args):
+        if getattr(reason_code, "is_failure", reason_code != 0):
+            print(f"[MQTT] Connection failed: {reason_code}")
+        else:
             self.connected = True
             print("[MQTT] Connected to broker")
-        else:
-            print(f"[MQTT] Connection failed with code {rc}")
 
-    def _on_disconnect(self, client, userdata, rc, properties=None):
+    def _on_disconnect(self, client, userdata, *args):
         self.connected = False
-        print(f"[MQTT] Disconnected (rc={rc})")
+        print("[MQTT] Disconnected")
 
     def publish_violation(self, violation_type, coordinates="", street="",
                           speed=None, speed_limit=None, **extra):
