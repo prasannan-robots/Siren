@@ -9,4 +9,4 @@ python-dotenv
 requests
 pyserial
 pynmea2
-paho-mqtt
+paho-mqtt>=1.6
